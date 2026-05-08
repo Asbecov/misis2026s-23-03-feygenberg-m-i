@@ -34,13 +34,17 @@ class VolumeSlicer:
 
         print("Объём загружен:", self.volume.shape)
 
-    def get_vertical_slice_x(self, x : int) -> np.ndarray:
+    def get_slice_x(self, x : int) -> np.ndarray:
         self._check_range(x, self.width, "X")
-        return self.volume[:, :, x]
+        return self.volume[x, :, :]
 
-    def get_vertical_slice_y(self, y : int) -> np.ndarray:
+    def get_slice_y(self, y : int) -> np.ndarray:
         self._check_range(y, self.height, "Y")
         return self.volume[:, y, :]
+
+    def get_slice_z(self, z : int) -> np.ndarray:
+        self._check_range(z, self.num_slices, "Z")
+        return self.volume[:, :, z]
 
     @staticmethod
     def _check_range(value : int, max_value : int, axis : str) -> None:
