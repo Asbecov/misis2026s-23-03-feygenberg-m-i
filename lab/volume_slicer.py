@@ -24,13 +24,13 @@ class VolumeSlicer:
 
             if img is None:
                 raise FileNotFoundError(f"Не удалось загрузить: {path}")
-
+            
             if self.width is None:
                 self.height, self.width = img.shape
 
             slices.append(img.astype(np.float32))
 
-        self.volume = np.stack(slices, axis=0)
+        self.volume = np.stack(slices, axis=-1)
 
         print("Объём загружен:", self.volume.shape)
 

@@ -1,8 +1,8 @@
 import argparse
 
-from prj.lab.lab01.volume_slicer import VolumeSlicer
+from lab.volume_slicer import VolumeSlicer
 
-from prj.lab.etalon import process_single_walnut_slice
+from lab.etalon import process_single_walnut_slice
 
 
 
