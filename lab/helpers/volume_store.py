@@ -1,0 +1,95 @@
+from pathlib import Path
+import cv2
+import numpy as np
+
+
+class VolumeStore:
+    def __init__(self, folder : str, ext : str = ".tiff"):
+        self.folder : str = folder
+        self.ext : str = ext
+
+        self._volume : np.ndarray | None = None
+        self.width : int | None = None
+        self.height : int | None = None
+        self.num_slices : int | None = None
+
+        self._load_slices()
+
+    @staticmethod
+    def from_volume(volume : np.ndarray) -> "VolumeStore":
+        store : VolumeStore = VolumeStore.__new__(VolumeStore)
+        store._volume = volume
+        store.height, store.width, store.num_slices = volume.shape
+        return store
+
+    def get_volume(self) -> np.ndarray:
+        if self._volume is None:
+            raise ValueError("Объём не загружен")
+        return self._volume
+
+    def _load_slices(self) -> None:
+        input_dir : Path = Path(self.folder)
+
+        slices : list[np.ndarray] = []
+        slices_paths : list[Path] = sorted(input_dir.glob(f"*{self.ext}"))
+        if not slices_paths:
+            raise FileNotFoundError(f"Нет файлов {self.ext} в {input_dir}")
+        
+        print(f"Найдено срезов: {len(slices_paths)}")
+
+        self.num_slices = len(slices_paths)
+
+        for path in slices_paths:
+            img : np.ndarray = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+
+            if img is None:
+                raise FileNotFoundError(f"Не удалось загрузить: {path}")
+            
+            if self.width is None:
+                self.height, self.width = img.shape
+
+            slices.append(img.astype(np.float32))
+
+        self._volume = np.stack(slices, axis=-1)
+
+        print("Объём загружен:", self._volume.shape)
+
+    def get_slice_x(self, x : int) -> np.ndarray:
+        self._check_range(x, self.width, "X")
+        return self._volume[x, :, :]
+
+    def get_slice_y(self, y : int) -> np.ndarray:
+        self._check_range(y, self.height, "Y")
+        return self._volume[:, y, :]
+
+    def get_slice_z(self, z : int) -> np.ndarray:
+        self._check_range(z, self.num_slices, "Z")
+        return self._volume[:, :, z]
+
+    def normalize_to_8bit(self) -> "VolumeStore":
+        min_val = self._volume.min()
+        max_val = self._volume.max()
+        normalized_volume : np.ndarray = np.empty_like(self._volume, dtype=np.uint8)
+
+        if max_val - min_val < 1e-6:
+            normalized_volume = np.zeros_like(self._volume, dtype=np.uint8)
+        else:
+            normalized_volume = (self._volume - min_val) / (max_val - min_val)
+            normalized_volume = (normalized_volume * 255).astype(np.uint8)
+
+        print(f"Нормализация: min={min_val:.2f}, max={max_val:.2f}")
+        return self.from_volume(normalized_volume)
+
+    def denoise_volume(self) -> "VolumeStore":
+        denoised = np.empty_like(self._volume) 
+
+        for z in range(self.num_slices):
+            denoised[:, :, z] = cv2.fastNlMeansDenoising(self.get_slice_z(z))
+
+        print("Денойзинг завершен")
+        return self.from_volume(denoised)
+
+    @staticmethod
+    def _check_range(value : int, max_value : int, axis : str) -> None:
+        if not (0 <= value < max_value):
+            raise ValueError(f"{axis} вне диапазона (0–{max_value - 1})")

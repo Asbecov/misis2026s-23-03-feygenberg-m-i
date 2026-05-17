@@ -8,4 +8,5 @@ dependencies = [
     "argparse>=1.4.0",
     "numpy>=2.4.4",
     "opencv-python>=4.13.0.92",
+    "tifffile>=2026.5.2",
 ]

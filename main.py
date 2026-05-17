@@ -1,50 +1,26 @@
 import argparse
 
-from lab.volume_slicer import VolumeSlicer
-
-from lab.etalon import process_single_walnut_slice
-
-
+from lab.helpers.segmentator import Segmentator
+from lab.helpers.volume_store import VolumeStore
+from lab.helpers.save_outputs import save_outputs
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Просмотр срезов 3D-объёма из TIFF 32-bit"
+        description="Сегментация КТ срезов грецкого ореха на три класса"
     )
 
     parser.add_argument(
         "--folder",
         type=str,
         required=True,
-        help="Папка с TIFF-срезами"
+        help="Папка со срезами"
     )
 
     parser.add_argument(
-        "--prefix",
+        "--ext",
         type=str,
-        required=True,
-        help="Префикс имени файла"
-    )
-
-    parser.add_argument(
-        "--num-slices",
-        type=int,
-        required=True,
-        help="Количество срезов (ось Z)"
-    )
-
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["x", "y", "z"],
-        required=True,
-        help="Тип среза: x, y, z"
-    )
-
-    parser.add_argument(
-        "--index",
-        type=int,
-        required=True,
-        help="Индекс среза"
+        default=".tiff",
+        help="Расширение файлов во входной директории"
     )
 
     parser.add_argument(
@@ -54,26 +30,20 @@ def parse_arguments():
         help="Папка для сохранения результата"
     )
 
-    return parser.parse_args() 
+    return parser.parse_args()
 
 
-def main():
+def main() -> None:
     args = parse_arguments()
+    input_volume = VolumeStore(args.folder, args.ext)
+    segmentation_results = Segmentator(input_volume).process()
 
-    volume : VolumeSlicer = VolumeSlicer(folder=args.folder, file_name=args.prefix, num_slices=args.num_slices)
-
-    if args.mode == "x":
-        slice = volume.get_slice_x(args.index)
-    elif args.mode == "y":
-        slice = volume.get_slice_y(args.index)
-    else: 
-        slice = volume.get_slice_z(args.index)
-
-    process_single_walnut_slice(
-        img = slice,
-        output_dir = args.output,
-        bright_quantile = 94,
-        step_fraction = 0.03    
+    save_outputs(
+        output_dir=args.output, 
+        original_volume=input_volume.normalize_to_8bit().denoise_volume(), 
+        shell_volume=segmentation_results[0],
+        kernel_volume=segmentation_results[1],
+        septa_volume=segmentation_results[2],
     )
 
 
