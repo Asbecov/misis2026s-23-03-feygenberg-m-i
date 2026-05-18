@@ -16,7 +16,7 @@ class Segmentator:
         num_slices = denoised_volume.num_slices
 
         hystogram : Hystogram = Hystogram(volume)
-        t_bg, t_mid, t_high = self._multi_otsu_thresholds(hystogram.get_statistics())
+        t_shell = self._bright_group_threshold(hystogram.get_statistics())
 
         shell_masks = np.zeros_like(volume, dtype=np.uint8)
         kernel_masks = np.zeros_like(volume, dtype=np.uint8)
@@ -30,7 +30,7 @@ class Segmentator:
             img = volume[:, :, z]
 
             # --- ЭТАП 1: СКОРЛУПА (Самая яркая группа) ---
-            shell_bin = (img >= t_high).astype(np.uint8) * 255
+            shell_bin = (img >= t_shell).astype(np.uint8) * 255
             
             # Закрываем мелкие дыры и берем самую большую компоненту (игнорируем внешний мусор)
             shell_closed = cv2.morphologyEx(shell_bin, cv2.MORPH_CLOSE, morph_close_kernel)
@@ -40,7 +40,8 @@ class Segmentator:
             interior = self._get_interior(shell_clean)
 
             # --- ЭТАП 2: ЯДРО (Вторая по яркости группа) ---
-            kernel_bin = ((img >= t_mid) & (img < t_high)).astype(np.uint8) * 255
+            kernel_threshold = self._kernel_threshold_after_shell(img, shell_clean, interior)
+            kernel_bin = (img >= kernel_threshold).astype(np.uint8) * 255
             
             # Оставляем только то, что внутри скорлупы, и строго вычитаем саму скорлупу
             kernel_bin = cv2.bitwise_and(kernel_bin, interior)
@@ -52,7 +53,7 @@ class Segmentator:
             kernel_clean = cv2.morphologyEx(kernel_clean, cv2.MORPH_CLOSE, morph_close_kernel)
 
             # --- ЭТАП 3: ПЕРЕГОРОДКА (Третья группа) ---
-            septa_bin = ((img >= t_bg) & (img < t_mid)).astype(np.uint8) * 255
+            septa_bin = (img < kernel_threshold).astype(np.uint8) * 255
             septa_bin = cv2.bitwise_and(septa_bin, interior)
             
             # Вычитаем скорлупу и готовое ядро
@@ -73,12 +74,34 @@ class Segmentator:
             VolumeStore.from_volume(septa_masks)
         )
 
-    # надо сделать метод который ищет наиболее яркую группу пикселей на гистограмме и возвращает только один порог, а для ядра брать порог еще раз после вычитанияя скорлупы
+    # надо сделать метод который ищет наиболее яркую группу пикселей на гистограмме и возвращает только один порог,
+    # а для ядра брать порог еще раз после вычитанияя скорлупы
     @staticmethod
-    def _multi_otsu_thresholds(counts: np.ndarray) -> Tuple[int, int, int]:
+    def _bright_group_threshold(counts: np.ndarray) -> int:
         total = counts.sum()
         if total <= 0:
-            return 0, 85, 170
+            return 170
+
+        return Segmentator._otsu_threshold_from_counts(counts)
+
+    @staticmethod
+    def _kernel_threshold_after_shell(
+        img: np.ndarray,
+        shell_clean: np.ndarray,
+        interior: np.ndarray
+    ) -> int:
+        mask = (interior > 0) & (shell_clean == 0)
+        if not np.any(mask):
+            return 170
+
+        counts = np.bincount(img[mask].ravel(), minlength=256).astype(np.float64)
+        return Segmentator._otsu_threshold_from_counts(counts)
+
+    @staticmethod
+    def _otsu_threshold_from_counts(counts: np.ndarray) -> int:
+        total = counts.sum()
+        if total <= 0:
+            return 170
 
         p = counts / total
         omega = np.cumsum(p)
@@ -86,32 +109,21 @@ class Segmentator:
         d_t = d[-1]
 
         max_sigma = -1.0
-        best_t1, best_t2 = 85, 170
-        
-        for t1 in range(1, 255):
-            w0 = omega[t1]
-            if w0 <= 0:
-                continue
-            m0 = d[t1] / w0
-            for t2 in range(t1 + 1, 256):
-                w1 = omega[t2] - omega[t1]
-                w2 = 1.0 - omega[t2]
-                if w1 <= 0 or w2 <= 0:
-                    continue
-                m1 = (d[t2] - d[t1]) / w1
-                m2 = (d_t - d[t2]) / w2
-                
-                sigma_b = (
-                    w0 * (m0 - d_t) ** 2
-                    + w1 * (m1 - d_t) ** 2
-                    + w2 * (m2 - d_t) ** 2
-                )
-                if sigma_b > max_sigma:
-                    max_sigma = sigma_b
-                    best_t1, best_t2 = t1, t2
+        best_t = 170
 
-        t_bg = int(best_t1 // 1.5) 
-        return t_bg, int(best_t1), int(best_t2)
+        for t in range(1, 256):
+            w0 = omega[t - 1]
+            w1 = 1.0 - w0
+            if w0 <= 0 or w1 <= 0:
+                continue
+            m0 = d[t - 1] / w0
+            m1 = (d_t - d[t - 1]) / w1
+            sigma_b = w0 * (m0 - d_t) ** 2 + w1 * (m1 - d_t) ** 2
+            if sigma_b > max_sigma:
+                max_sigma = sigma_b
+                best_t = t
+
+        return int(best_t)
 
     # Можно учитывать средний размер скорлупы между слайсами чтобы объединять компоненты, если их несколько
     @staticmethod
