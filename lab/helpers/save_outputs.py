@@ -23,7 +23,7 @@ def save_outputs(
     septa_data = septa_volume.get_volume()
 
     num_slices = original_volume.num_slices
-    print(f"Начало сохранения слоев. Всего срезов: {num_slices}")
+    print(f"Start saving slices. Total slices: {num_slices}")
 
     for z in range(num_slices):
         src = orig_data[:, :, z]
@@ -43,11 +43,11 @@ def save_outputs(
         
         colored_layers[shell > 0] = [0, 0, 220]   
         colored_layers[kernel > 0] = [0, 200, 0]  
-        colored_layers[septa > 0] = [0, 220, 220]   
+        colored_layers[septa > 0] = [220, 0, 0]   
 
         beta = 1.0 - alpha
         blended = cv2.addWeighted(img_bgr, alpha, colored_layers, beta, 0)
 
         cv2.imwrite(str(overlay_path / f"{base_name}_overlay.png"), blended)
 
-    print(f"Все маски и оверлеи успешно экспортированы в: {out_path}")
+    print(f"Saved masks to: {out_path}")

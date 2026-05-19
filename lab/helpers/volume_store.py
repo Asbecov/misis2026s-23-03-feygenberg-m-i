@@ -35,7 +35,7 @@ class VolumeStore:
         if not slices_paths:
             raise FileNotFoundError(f"Нет файлов {self.ext} в {input_dir}")
         
-        print(f"Найдено срезов: {len(slices_paths)}")
+        print(f"Found slices: {len(slices_paths)}")
 
         self.num_slices = len(slices_paths)
 
@@ -43,7 +43,7 @@ class VolumeStore:
             img : np.ndarray = cv2.imread(path, cv2.IMREAD_UNCHANGED)
 
             if img is None:
-                raise FileNotFoundError(f"Не удалось загрузить: {path}")
+                raise FileNotFoundError(f"Could not load: {path}")
             
             if self.width is None:
                 self.height, self.width = img.shape
@@ -52,7 +52,7 @@ class VolumeStore:
 
         self._volume = np.stack(slices, axis=-1)
 
-        print("Объём загружен:", self._volume.shape)
+        print("Volume loaded:", self._volume.shape)
 
     def get_slice_x(self, x : int) -> np.ndarray:
         self._check_range(x, self.width, "X")
@@ -66,6 +66,11 @@ class VolumeStore:
         self._check_range(z, self.num_slices, "Z")
         return self._volume[:, :, z]
 
+    def transpose(self, axes: tuple[int, int, int]) -> "VolumeStore":
+        volume = self.get_volume()
+        transposed = np.transpose(volume, axes)
+        return self.from_volume(transposed)
+
     def normalize_to_8bit(self) -> "VolumeStore":
         min_val = self._volume.min()
         max_val = self._volume.max()
@@ -77,8 +82,14 @@ class VolumeStore:
             normalized_volume = (self._volume - min_val) / (max_val - min_val)
             normalized_volume = (normalized_volume * 255).astype(np.uint8)
 
-        print(f"Нормализация: min={min_val:.2f}, max={max_val:.2f}")
+        print(f"Normalization done: min={min_val:.2f}, max={max_val:.2f}")
         return self.from_volume(normalized_volume)
+    
+    def contrast(self) -> "VolumeStore":
+        contrasted = self._volume * 2
+
+        print("Done contrast enhancement")
+        return self.from_volume(contrasted)
 
     def denoise_volume(self) -> "VolumeStore":
         denoised = np.empty_like(self._volume) 
@@ -86,7 +97,7 @@ class VolumeStore:
         for z in range(self.num_slices):
             denoised[:, :, z] = cv2.fastNlMeansDenoising(self.get_slice_z(z))
 
-        print("Денойзинг завершен")
+        print("Done denoising")
         return self.from_volume(denoised)
 
     @staticmethod
