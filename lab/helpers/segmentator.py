@@ -44,7 +44,7 @@ class Segmentator:
 
 
     def process(self) -> Tuple[VolumeStore, VolumeStore, VolumeStore]:
-        base_store = self.volume_store
+        base_store = self.volume_store.normalize_to_8bit().contrast()
 
         shell_z, kernel_z, septa_z = self._segment_volume_store(
             base_store,
@@ -98,11 +98,10 @@ class Segmentator:
         slice_end: int | None = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         self._shell_area_history = []
-        denoised_volume: VolumeStore = volume_store.normalize_to_8bit().contrast().denoise_volume()
 
-        shell_masks = np.zeros_like(denoised_volume.get_volume(), dtype=np.uint8)
-        kernel_masks = np.zeros_like(denoised_volume.get_volume(), dtype=np.uint8)
-        septa_masks = np.zeros_like(denoised_volume.get_volume(), dtype=np.uint8)
+        shell_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
+        kernel_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
+        septa_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
 
         morph_close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         morph_open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -121,14 +120,9 @@ class Segmentator:
                 (2 * self._shell_inward_guard_r + 1, 2 * self._shell_inward_guard_r + 1)
             )
 
-        start_idx, end_idx = self._clamp_slice_range(
-            slice_start,
-            slice_end,
-            denoised_volume.num_slices
-        )
 
-        for i in range(start_idx, end_idx + 1):
-            img = denoised_volume.get_slice_z(i)
+        for i in range(slice_start, slice_end + 1):
+            img = volume_store.get_slice_z(i)
 
             shell_hystogram : Hystogram = Hystogram(img)
             t_shell = self._calc_threshold(shell_hystogram.get_statistics(), int(img.mean() * self.bg_fraction))
@@ -209,25 +203,6 @@ class Segmentator:
 
         return shell_masks, kernel_masks, septa_masks
 
-    @staticmethod
-    def _clamp_slice_range(
-        start: int | None,
-        end: int | None,
-        size: int
-    ) -> tuple[int, int]:
-        if size <= 0:
-            return 0, -1
-
-        start_idx = 0 if start is None else int(start)
-        end_idx = size - 1 if end is None else int(end)
-
-        start_idx = max(0, min(start_idx, size - 1))
-        end_idx = max(0, min(end_idx, size - 1))
-
-        if end_idx < start_idx:
-            start_idx, end_idx = end_idx, start_idx
-
-        return start_idx, end_idx
 
     def _apply_axis_bounds(
         self,
@@ -243,17 +218,14 @@ class Segmentator:
         use_z_bounds = self.z_start is not None or self.z_end is not None
 
         if use_x_bounds:
-            x_start, x_end = self._clamp_slice_range(self.x_start, self.x_end, width)
-            mask[:, :x_start, :] = False
-            mask[:, x_end + 1:, :] = False
+            mask[:, :self.x_start, :] = False
+            mask[:, self.x_end + 1:, :] = False
         if use_y_bounds:
-            y_start, y_end = self._clamp_slice_range(self.y_start, self.y_end, height)
-            mask[:y_start, :, :] = False
-            mask[y_end + 1:, :, :] = False
+            mask[:self.y_start, :, :] = False
+            mask[self.y_end + 1:, :, :] = False
         if use_z_bounds:
-            z_start, z_end = self._clamp_slice_range(self.z_start, self.z_end, depth)
-            mask[:, :, :z_start] = False
-            mask[:, :, z_end + 1:] = False
+            mask[:, :, :self.z_start] = False
+            mask[:, :, self.z_end + 1:] = False
 
         shell_mask[~mask] = 0
         kernel_mask[~mask] = 0
@@ -325,12 +297,11 @@ class Segmentator:
         if max_radius <= 0 and min_area <= 0:
             return mask
 
-        bin_mask = (mask > 0).astype(np.uint8)
-        num, labels = cv2.connectedComponents(bin_mask, connectivity=8)
+        num, labels = cv2.connectedComponents(mask, connectivity=8)
         if num <= 1:
             return mask
 
-        dist = cv2.distanceTransform(bin_mask, cv2.DIST_L2, 5)
+        dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
         cleaned = mask.copy()
 
         for label in range(1, num):
