@@ -5,7 +5,10 @@ import numpy as np
 
 from lab.helpers.hystogram import Hystogram
 from lab.helpers.volume_store import VolumeStore
-
+# Необходимо на этом этапе придумать новый алгоритм нахождения внутренности ореха или хотя бы указатель на то что внутренность есть, пусть и разомкнутая
+# Внутренности можно попробовать брать не через единый порог а через адаптивную оконную бинаризацию и отдельно работать уже с бинаризированным изображеним, выделять тонкие сегменты (линии) в перегородку а все остальное брать как скорлупу - может получиться много артефактов
+# Нужно проанализировать гистограмму на эталонных слайсах чтобы понимать какую долю занимает фон и какую долю занимает искомый нами объект чтобы более точно определить порог для поиска скорлупы по отсу
+# Доработать защитные зоны вокруг скорлупы чтобы не пускать шум от сканирования в область поиска перегородки, а также защитную зону внутри скорлупы чтобы не пускать шум в область поиска ядра
 class Segmentator:
     def __init__(
         self,
@@ -38,7 +41,7 @@ class Segmentator:
         self._shell_inward_guard_r: int = 3 # radius of morphological dilation kernel to create guard area inside shell mask (0 means no guard, higher means more aggressive guard) - this is used to prevent kernel from being detected too close to the shell, which is often a source of false positives
         
         self._thin_max_radius: float = 7.0 # max thickness (in px) for components treated as thin lines/points
-        self._thin_min_area: int = 6 # min area (in px) below which components are removed
+        self._thin_min_area: int = 20 # min area (in px) below which components are removed
 
         
 
@@ -126,6 +129,7 @@ class Segmentator:
 
             shell_hystogram : Hystogram = Hystogram(img)
             t_shell = self._calc_threshold(shell_hystogram.get_statistics(), int(img.mean() * self.bg_fraction))
+            # t_shell = np.percentile(img, 96)
 
             shell_bin = (img >= t_shell).astype(np.uint8) * 255
 
@@ -148,8 +152,7 @@ class Segmentator:
             interior_mask = interior > 0
 
             if not np.any(interior_mask):
-                shell_masks[:, :, i] = shell_clean
-                continue
+                interior_mask = np.ones_like(interior_mask, dtype=bool)
 
             shell_guard = shell_clean
             if shell_guard_kernel is not None:
@@ -160,8 +163,8 @@ class Segmentator:
 
             interior_image = img[interior_mask]
 
-            kernel_hystogram : Hystogram = Hystogram(interior_image)
-            t_kernel = self._calc_threshold(kernel_hystogram.get_statistics(), int(interior_image.mean() * self.bg_fraction))
+            interior_hystogram : Hystogram = Hystogram(interior_image)
+            t_kernel = self._calc_threshold(interior_hystogram.get_statistics(), int(interior_image.mean() * self.bg_fraction))
 
             kernel_bin = (img >= t_kernel).astype(np.uint8) * 255
             kernel_bin = cv2.bitwise_and(kernel_bin, interior)
@@ -188,7 +191,8 @@ class Segmentator:
             interior_image_wo_kernel = img[interior_wo_kernel_mask]
 
             septa_hystogram : Hystogram = Hystogram(interior_image_wo_kernel)
-            t_septa = self._calc_threshold(septa_hystogram.get_statistics(), int(interior_image_wo_kernel.mean() * self.bg_fraction))
+            # t_septa = self._calc_threshold(septa_hystogram.get_statistics(), int(interior_image_wo_kernel.mean() * self.bg_fraction))
+            t_septa = np.percentile(interior_image_wo_kernel, 95)
 
             septa_bin = (img >= t_septa).astype(np.uint8) * 255
             septa_bin[interior_wo_kernel_mask == 0] = 0
