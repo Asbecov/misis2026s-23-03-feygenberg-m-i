@@ -62,13 +62,19 @@ def parse_arguments():
         help="Допуск для boundary-метрик в пикселях"
     )
 
+    parser.add_argument(
+        "--show-debug",
+        action="store_true",
+        help="Показывать отладочные изображения"
+    )
+
     return parser.parse_args()
 
 def main() -> None:
     args = parse_arguments()
     input_volume = VolumeStore(args.folder, args.ext)
     bounds = load_bounds(args.bounds)
-    segmentation_results = Segmentator(input_volume, **bounds).process()
+    segmentation_results = Segmentator(input_volume, args.show_debug, **bounds).process()
 
     save_outputs(
         output_dir=args.output, 

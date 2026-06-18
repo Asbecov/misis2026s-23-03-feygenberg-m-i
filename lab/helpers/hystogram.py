@@ -28,21 +28,35 @@ class Hystogram:
             
         return self._statistics.astype(np.float32) / total_pixels
     
-    def draw_histogram(self, width: int, height: int) -> np.ndarray:
-        max_val : int = self._statistics.max()
-        count : int = self._statistics.shape[0] 
+    def draw_hystogram(self, width: int, height: int, start: int | None = None, thresh: int | None = None) -> np.ndarray:
+        max_val: int = self._statistics.max()
+        count: int = self._statistics.shape[0] 
 
-        hist_img : np.ndarray = np.zeros((height, width, 3), dtype=np.uint8)
+        hist_img: np.ndarray = np.zeros((height, width, 3), dtype=np.uint8)
         
-        if max_val == 0:
+        if max_val == 0 or count == 0:
             return hist_img
 
-        bin_w : int = int(np.ceil(width / count))
+        bin_w: float = width / count
         
-        normalized_stats : np.ndarray = (self._statistics.astype(np.float32) * height / max_val).astype(np.int32)
+        normalized_stats: np.ndarray = (self._statistics.astype(np.float32) * height / max_val).astype(np.int32)
 
         for i in range(count):
-            cv2.rectangle(hist_img, (bin_w * i, height - normalized_stats[i]), (bin_w * (i + 1), 0), (255, 255, 255), -1)
+            x1 = int(bin_w * i)
+            y1 = height - normalized_stats[i]
+            
+            x2 = int(bin_w * (i + 1))
+            y2 = height 
+            
+            cv2.rectangle(hist_img, (x1, y1), (x2, y2), (255, 255, 255), -1)
+
+        if start is not None:
+            s_x = int(bin_w * start)
+            cv2.line(hist_img, (s_x, 0), (s_x, height), (0, 255, 0), 2)
         
+        if thresh is not None:
+            t_x = int(bin_w * thresh)
+            cv2.line(hist_img, (t_x, 0), (t_x, height), (0, 0, 255), 2)
+
         return hist_img
 

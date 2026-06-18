@@ -1,7 +1,7 @@
-from __future__ import annotations
 from typing import Tuple
 import cv2
 import numpy as np
+from scipy.ndimage import gaussian_filter
 
 from lab.helpers.hystogram import Hystogram
 from lab.helpers.volume_store import VolumeStore
@@ -13,6 +13,7 @@ class Segmentator:
     def __init__(
         self,
         volume_store: VolumeStore,
+        show_debug: bool = False, 
         x_start: int | None = None,
         x_end: int | None = None,
         y_start: int | None = None,
@@ -21,6 +22,8 @@ class Segmentator:
         z_end: int | None = None
     ):
         self.volume_store: VolumeStore = volume_store
+
+        self.show_debug: bool = show_debug
 
         self.x_start: int | None = x_start
         self.x_end: int | None = x_end
@@ -34,237 +37,199 @@ class Segmentator:
         
         self._morph_operations : int = 2 # how many times to apply morphological open/close operations for cleaning masks
         
-        self.bg_fraction : float = 1.2 # fraction of mean intensity to use as starting point for Otsu's thresholding (higher means more aggressive segmentation)
+        self.bg_fraction : float = 1.3 # fraction of mean intensity to use as starting point for Otsu's thresholding (higher means more aggressive segmentation)
         self.shell_size_fraction : float = 0.7 # fraction of ratio of previous couple of masks' areas to use as minimum area ratio for accepting new shell mask (lower means more aggressive acceptance of smaller masks)
         
-        self._kernel_guard_r: int = 3 # radius of morphological dilation kernel to create guard area around kernel mask (0 means no guard, higher means more aggressive guard) - this is used to prevent septa from being detected too close to the kernel, which is often a source of false positives
-        self._shell_inward_guard_r: int = 3 # radius of morphological dilation kernel to create guard area inside shell mask (0 means no guard, higher means more aggressive guard) - this is used to prevent kernel from being detected too close to the shell, which is often a source of false positives
+        self._shell_guard_r: int = 2 # radius of morphological dilation kernel to create guard area inside shell mask (0 means no guard, higher means more aggressive guard) - this is used to prevent kernel from being detected too close to the shell, which is often a source of false positives
         
         self._thin_max_radius: float = 7.0 # max thickness (in px) for components treated as thin lines/points
         self._thin_min_area: int = 20 # min area (in px) below which components are removed
 
-        
-
-
     def process(self) -> Tuple[VolumeStore, VolumeStore, VolumeStore]:
         base_store = self.volume_store.normalize_to_8bit().contrast()
-
-        shell_z, kernel_z, septa_z = self._segment_volume_store(
+        shell_z = self._segment_shell(
             base_store,
             slice_start=self.z_start,
             slice_end=self.z_end
         )
 
         volume_x = base_store.transpose((0, 2, 1))
-        shell_x, kernel_x, septa_x = self._segment_volume_store(
+        shell_x = self._segment_shell(
             volume_x,
             slice_start=self.x_start,
             slice_end=self.x_end
-        )
-        shell_x = VolumeStore.from_volume(shell_x).transpose((0, 2, 1)).get_volume()
-        kernel_x = VolumeStore.from_volume(kernel_x).transpose((0, 2, 1)).get_volume()
-        septa_x = VolumeStore.from_volume(septa_x).transpose((0, 2, 1)).get_volume()
+        ).transpose((0, 2, 1))
 
         volume_y = base_store.transpose((1, 2, 0))
-        shell_y, kernel_y, septa_y = self._segment_volume_store(
+        shell_y= self._segment_shell(
             volume_y,
             slice_start=self.y_start,
             slice_end=self.y_end
-        )
-        shell_y = VolumeStore.from_volume(shell_y).transpose((2, 0, 1)).get_volume()
-        kernel_y = VolumeStore.from_volume(kernel_y).transpose((2, 0, 1)).get_volume()
-        septa_y = VolumeStore.from_volume(septa_y).transpose((2, 0, 1)).get_volume()
+        ).transpose((2, 0, 1))
 
-        shell_final, kernel_final, septa_final = self._fuse_votes(
-            (shell_z, kernel_z, septa_z),
-            (shell_x, kernel_x, septa_x),
-            (shell_y, kernel_y, septa_y)
-        )
-
-        shell_final, kernel_final, septa_final = self._apply_axis_bounds(
-            shell_final,
-            kernel_final,
-            septa_final
-        )
-
-        print("Segmentation completed.")
-        return (
-            VolumeStore.from_volume(shell_final),
-            VolumeStore.from_volume(kernel_final),
-            VolumeStore.from_volume(septa_final)
-        )
-
-    def _segment_volume_store(
-        self,
-        volume_store: VolumeStore,
-        slice_start: int | None = None,
-        slice_end: int | None = None
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        self._shell_area_history = []
-
-        shell_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
-        kernel_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
-        septa_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
 
         morph_close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         morph_open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
-        kernel_guard_kernel = None
-        shell_guard_kernel = None
+        shell_volume = VolumeStore.fuse_volumes(shell_z, shell_x, shell_y, votes_threshold=2).close(morph_close_kernel)
+        kernel_volume = VolumeStore.from_volume(np.zeros_like(shell_volume.get_volume(), dtype=np.uint8))
 
-        if self._kernel_guard_r > 0:
-            kernel_guard_kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE,
-                (2 * self._kernel_guard_r + 1, 2 * self._kernel_guard_r + 1)
-            )
-        if self._shell_inward_guard_r > 0:
-            shell_guard_kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE,
-                (2 * self._shell_inward_guard_r + 1, 2 * self._shell_inward_guard_r + 1)
-            )
+        volume_z_wo_shell = base_store.substract(shell_volume.expand_outside(), guard_radius=self._shell_guard_r)
+        septa_z = self._segment_septa(
+            volume_z_wo_shell,
+            slice_start=self.z_start,
+            slice_end=self.z_end
+        )
 
+        septa_x = self._segment_septa(
+            volume_z_wo_shell.transpose((0, 2, 1)),
+            slice_start=self.x_start,
+            slice_end=self.x_end
+        ).transpose((0, 2, 1))
+
+        septa_y = self._segment_septa(
+            volume_z_wo_shell.transpose((1, 2, 0)),
+            slice_start=self.y_start,
+            slice_end=self.y_end
+        ).transpose((2, 0, 1))
+
+        septa_volume = VolumeStore.fuse_volumes(septa_z, septa_x, septa_y, votes_threshold=2).open(morph_open_kernel)
+
+        return (shell_volume, kernel_volume, septa_volume)
+
+    def _segment_shell(
+        self,
+        volume_store: VolumeStore,
+        slice_start: int | None = None,
+        slice_end: int | None = None
+    ) -> VolumeStore:
+        self._shell_area_history = []
+
+        shell_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
+
+        morph_close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        morph_open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+        kernel_bg = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
         for i in range(slice_start, slice_end + 1):
             img = volume_store.get_slice_z(i)
 
             shell_hystogram : Hystogram = Hystogram(img)
-            t_shell = self._calc_threshold(shell_hystogram.get_statistics(), int(img.mean() * self.bg_fraction))
-            # t_shell = np.percentile(img, 96)
 
-            shell_bin = (img >= t_shell).astype(np.uint8) * 255
+            t_shell = self._calc_threshold(shell_hystogram.get_statistics(), int(img.mean() * self.bg_fraction))
+
+            shell_bin = (img >= t_shell).astype(np.uint8) * 255 
 
             shell_bin = cv2.morphologyEx(shell_bin, cv2.MORPH_OPEN, morph_open_kernel, iterations=self._morph_operations)
-            shell_bin = cv2.morphologyEx(shell_bin, cv2.MORPH_CLOSE, morph_close_kernel, iterations=self._morph_operations // 2)
 
             if len(self._shell_area_history) >= 2:
-                min_ratio = self._shell_area_history[-1] / self._shell_area_history[-2] * self.shell_size_fraction
+                ratios : list[float] = []
+                for index in range(len(self._shell_area_history) - 1, 0, -1):
+                    if index - 1 >= 0:
+                        ratios.append(self._shell_area_history[index] / self._shell_area_history[index - 1])
+
+                avg_ratio = float(np.mean(ratios))
+                min_ratio = avg_ratio * self.shell_size_fraction
             else:
                 min_ratio = 1.4
 
-            shell_clean = self._largest_component(shell_bin, min_ratio)
+            shell_clean = self._сonnect_components(shell_bin, min_ratio)
             shell_clean = self._remove_thin_components(
                 shell_clean,
                 max_radius=self._thin_max_radius,
                 min_area=self._thin_min_area
             )
 
-            interior = self._get_interior(shell_clean)
-            interior_mask = interior > 0
+            shell_clean = cv2.morphologyEx(shell_clean, cv2.MORPH_CLOSE, morph_close_kernel, iterations=self._morph_operations)
 
-            if not np.any(interior_mask):
-                interior_mask = np.ones_like(interior_mask, dtype=bool)
+            img_bgr = cv2.cvtColor((img * 2.7).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+            
+            if np.any(shell_clean):
+                sure_bg = cv2.dilate(shell_clean, kernel_bg, iterations=3)
 
-            shell_guard = shell_clean
-            if shell_guard_kernel is not None:
-                shell_dilated = cv2.dilate(shell_clean, shell_guard_kernel)
-                shell_inward = np.zeros_like(shell_clean)
-                shell_inward[interior_mask] = shell_dilated[interior_mask]
-                shell_guard = cv2.bitwise_or(shell_clean, shell_inward)
+                distance_transform = cv2.distanceTransform(shell_clean, cv2.DIST_L2, 5)
+                sure_fg = (distance_transform > 0.1 * distance_transform.max()).astype(np.uint8) * 255
 
-            interior_image = img[interior_mask]
+                unknown = cv2.subtract(sure_bg, sure_fg)
 
-            interior_hystogram : Hystogram = Hystogram(interior_image)
-            t_kernel = self._calc_threshold(interior_hystogram.get_statistics(), int(interior_image.mean() * self.bg_fraction))
+                _, markers = cv2.connectedComponents(sure_fg)
+                markers = markers + 1 
+                markers[unknown == 255] = 0 
 
-            kernel_bin = (img >= t_kernel).astype(np.uint8) * 255
-            kernel_bin = cv2.bitwise_and(kernel_bin, interior)
-            kernel_bin[shell_guard > 0] = 0
+                shell_refined = cv2.watershed(img_bgr, markers)
 
-            kernel_clean = cv2.morphologyEx(kernel_bin, cv2.MORPH_OPEN, morph_open_kernel, iterations=self._morph_operations)
-            kernel_clean = self._remove_thin_components(
-                kernel_clean,
-                max_radius=self._thin_max_radius,
-                min_area=self._thin_min_area
-            )
+                shell_refined = np.zeros_like(shell_clean)
+                shell_refined[markers > 1] = 255
 
-            kernel_guard = kernel_clean
-            if kernel_guard_kernel is not None:
-                kernel_guard = cv2.dilate(kernel_clean, kernel_guard_kernel)
+            else:
+                shell_refined = shell_clean.copy()
 
-            interior_wo_kernel_mask = interior_mask & (kernel_guard == 0) & (shell_guard == 0)
 
-            if not np.any(interior_wo_kernel_mask):
-                shell_masks[:, :, i] = shell_clean
-                kernel_masks[:, :, i] = kernel_clean
-                continue
+            if (self.show_debug and i == (slice_start + slice_end) // 2):
+                dist_visual = cv2.normalize(distance_transform, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                dist_visual_bgr = cv2.cvtColor(dist_visual, cv2.COLOR_GRAY2BGR)
+                
+                show_otsu : np.ndarray = np.concat(
+                    (
+                        cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), 
+                        shell_hystogram.draw_hystogram(img.shape[1], img.shape[0], int(img.mean() * self.bg_fraction), t_shell), 
+                        cv2.cvtColor(shell_bin, cv2.COLOR_GRAY2BGR), 
+                        cv2.cvtColor(shell_clean, cv2.COLOR_GRAY2BGR)
+                    ), 
+                    axis=1
+                )
+                show_watershed : np.ndarray = np.concat(
+                    (
+                        img_bgr, 
+                        cv2.cvtColor(sure_bg, cv2.COLOR_GRAY2BGR),
+                        dist_visual_bgr,  
+                        cv2.cvtColor(sure_fg, cv2.COLOR_GRAY2BGR), 
+                        cv2.cvtColor(shell_refined, cv2.COLOR_GRAY2BGR)
+                    ), 
+                    axis=1
+                )
+                cv2.imshow(f"Shell Watershed debug slice {i}", show_watershed)
+                cv2.imshow(f"Shell Otsu debug slice {i}", show_otsu)
+                cv2.waitKey(0) 
+                cv2.destroyAllWindows()
 
-            interior_image_wo_kernel = img[interior_wo_kernel_mask]
+            shell_masks[:, :, i] = shell_refined
+    
 
-            septa_hystogram : Hystogram = Hystogram(interior_image_wo_kernel)
-            # t_septa = self._calc_threshold(septa_hystogram.get_statistics(), int(interior_image_wo_kernel.mean() * self.bg_fraction))
-            t_septa = np.percentile(interior_image_wo_kernel, 95)
+        return VolumeStore.from_volume(shell_masks)
+    
+    def _segment_septa(
+        self,
+        volume_store: VolumeStore,  
+        slice_start: int | None = None,
+        slice_end: int | None = None
+    ) -> VolumeStore:
+        septa_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
 
-            septa_bin = (img >= t_septa).astype(np.uint8) * 255
-            septa_bin[interior_wo_kernel_mask == 0] = 0
-            septa_bin[shell_guard > 0] = 0
-            septa_bin[kernel_guard > 0] = 0
+        tophat_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
 
-            septa_clean = cv2.morphologyEx(septa_bin, cv2.MORPH_CLOSE, morph_close_kernel, iterations=self._morph_operations)
+        for i in range(slice_start, slice_end + 1):
+            interior = volume_store.get_slice_z(i)
 
-            shell_masks[:, :, i] = shell_clean
-            kernel_masks[:, :, i] = kernel_clean
+            gray_tophat = cv2.morphologyEx(interior, cv2.MORPH_TOPHAT, tophat_kernel)
+
+            septa_hystoram : Hystogram = Hystogram(gray_tophat)
+            t_septa = self._calc_threshold(septa_hystoram.get_statistics())
+            septa_bin = (gray_tophat >= t_septa).astype(np.uint8) * 255
+
+            septa_clean = self._remove_thin_components(septa_bin, max_radius=0, min_area=15)
+            
+            if self.show_debug and i == (slice_start + slice_end) // 2:
+                show : np.ndarray = np.concat((interior, gray_tophat, septa_bin, septa_clean), axis=1)
+                cv2.imshow(f"Septa segmentation debug slice {i}", show)
+                cv2.waitKey(0) 
+                cv2.destroyAllWindows()
+
             septa_masks[:, :, i] = septa_clean
 
-        return shell_masks, kernel_masks, septa_masks
+        return VolumeStore.from_volume(septa_masks)
 
-
-    def _apply_axis_bounds(
-        self,
-        shell_mask: np.ndarray,
-        kernel_mask: np.ndarray,
-        septa_mask: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        height, width, depth = shell_mask.shape
-        mask = np.ones((height, width, depth), dtype=bool)
-
-        use_x_bounds = self.x_start is not None or self.x_end is not None
-        use_y_bounds = self.y_start is not None or self.y_end is not None
-        use_z_bounds = self.z_start is not None or self.z_end is not None
-
-        if use_x_bounds:
-            mask[:, :self.x_start, :] = False
-            mask[:, self.x_end + 1:, :] = False
-        if use_y_bounds:
-            mask[:self.y_start, :, :] = False
-            mask[self.y_end + 1:, :, :] = False
-        if use_z_bounds:
-            mask[:, :, :self.z_start] = False
-            mask[:, :, self.z_end + 1:] = False
-
-        shell_mask[~mask] = 0
-        kernel_mask[~mask] = 0
-        septa_mask[~mask] = 0
-
-        return shell_mask, kernel_mask, septa_mask
-
-    @staticmethod
-    def _fuse_votes(
-        masks_z: tuple[np.ndarray, np.ndarray, np.ndarray],
-        masks_x: tuple[np.ndarray, np.ndarray, np.ndarray],
-        masks_y: tuple[np.ndarray, np.ndarray, np.ndarray]
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        shell_votes = (masks_z[0] > 0).astype(np.uint8)
-        shell_votes += (masks_x[0] > 0).astype(np.uint8)
-        shell_votes += (masks_y[0] > 0).astype(np.uint8)
-
-        kernel_votes = (masks_z[1] > 0).astype(np.uint8)
-        kernel_votes += (masks_x[1] > 0).astype(np.uint8)
-        kernel_votes += (masks_y[1] > 0).astype(np.uint8)
-
-        septa_votes = (masks_z[2] > 0).astype(np.uint8)
-        septa_votes += (masks_x[2] > 0).astype(np.uint8)
-        septa_votes += (masks_y[2] > 0).astype(np.uint8)
-
-        shell_final = shell_votes >= 1
-        kernel_final = (kernel_votes >= 1) & ~shell_final
-        septa_final = (septa_votes >= 1) & ~shell_final & ~kernel_final
-
-        return (
-            (shell_final.astype(np.uint8) * 255),
-            (kernel_final.astype(np.uint8) * 255),
-            (septa_final.astype(np.uint8) * 255)
-        )
-    
     @staticmethod
     def _calc_threshold(
         counts: np.ndarray,
@@ -279,8 +244,8 @@ class Segmentator:
         levels = np.arange(start, start + hyst.size, dtype=np.float64)
         weight1 = np.cumsum(hyst)
         weight2 = total - weight1
-        cumulative_mean = np.cumsum(hyst * levels)
 
+        cumulative_mean = np.cumsum(hyst * levels)
         mean1 = np.divide(cumulative_mean, weight1, out=np.zeros_like(cumulative_mean), where=weight1 > 0)
         mean2 = np.divide(
             cumulative_mean[-1] - cumulative_mean,
@@ -319,7 +284,7 @@ class Segmentator:
 
         return cleaned
 
-    def _largest_component(self, mask: np.ndarray, min_ratio : float) -> np.ndarray:
+    def _сonnect_components(self, mask: np.ndarray, min_ratio : float) -> np.ndarray:
         num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         if num <= 1:
             return np.zeros_like(mask)
@@ -356,11 +321,3 @@ class Segmentator:
             self._shell_area_history = self._shell_area_history[-self._shell_history_size:]
 
         return best_mask
-
-    @staticmethod
-    def _get_interior(shell_mask: np.ndarray) -> np.ndarray:
-        h, w = shell_mask.shape
-        flood_mask = np.zeros((h + 2, w + 2), np.uint8)
-        shell_inv = cv2.bitwise_not(shell_mask)
-        cv2.floodFill(shell_inv, flood_mask, (0, 0), 0)
-        return shell_inv
