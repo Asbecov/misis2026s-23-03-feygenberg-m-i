@@ -1,6 +1,7 @@
 from pathlib import Path
 import cv2
 import numpy as np
+from scipy import ndimage as ndi
 
 
 class VolumeStore:
@@ -73,17 +74,15 @@ class VolumeStore:
         return self.from_volume(transposed)
     
     def close(self, core: np.ndarray) -> "VolumeStore":
-        closed = np.empty_like(self._volume)
-        for z in range(self.num_slices):
-            closed[:, :, z] = cv2.morphologyEx(self.get_slice_z(z), cv2.MORPH_CLOSE, core)
+        footprint = self._get_3d_footprint(core)
 
+        closed = ndi.grey_closing(self.get_volume(), footprint=footprint)
         return self.from_volume(closed)
 
     def open(self, core: np.ndarray) -> "VolumeStore":
-        opened = np.empty_like(self._volume)
-        for z in range(self.num_slices):
-            opened[:, :, z] = cv2.morphologyEx(self.get_slice_z(z), cv2.MORPH_OPEN, core)
+        footprint = self._get_3d_footprint(core)
 
+        opened = ndi.grey_opening(self.get_volume(), footprint=footprint)
         return self.from_volume(opened)
 
     def substract(self, other: "VolumeStore", guard_radius: int) -> "VolumeStore":
@@ -170,6 +169,25 @@ class VolumeStore:
     def _check_range(value : int, max_value : int, axis : str) -> None:
         if not (0 <= value < max_value):
             raise ValueError(f"{axis} вне диапазона (0–{max_value - 1})")
+
+    @staticmethod
+    def _get_3d_footprint(core: np.ndarray) -> np.ndarray:
+        if core.ndim == 3:
+            return core
+            
+        h, w = core.shape
+        d = max(h, w)
+        
+        if h == 0 or w == 0:
+            return core
+
+        cy, cx, cz = (h - 1) / 2.0, (w - 1) / 2.0, (d - 1) / 2.0
+        ry, rx, rz = max(h / 2.0, 1), max(w / 2.0, 1), max(d / 2.0, 1)
+        
+        y, x, z = np.ogrid[0:h, 0:w, 0:d]
+        
+        mask = ((y - cy) / ry)**2 + ((x - cx) / rx)**2 + ((z - cz) / rz)**2 <= 1.0
+        return mask.astype(np.uint8)
         
     def get_volume(self) -> np.ndarray:
         if self._volume is None:

@@ -1,14 +1,10 @@
-from typing import Tuple
 import cv2
 import numpy as np
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import label
 
 from lab.helpers.hystogram import Hystogram
 from lab.helpers.volume_store import VolumeStore
-# Необходимо на этом этапе придумать новый алгоритм нахождения внутренности ореха или хотя бы указатель на то что внутренность есть, пусть и разомкнутая
-# Внутренности можно попробовать брать не через единый порог а через адаптивную оконную бинаризацию и отдельно работать уже с бинаризированным изображеним, выделять тонкие сегменты (линии) в перегородку а все остальное брать как скорлупу - может получиться много артефактов
-# Нужно проанализировать гистограмму на эталонных слайсах чтобы понимать какую долю занимает фон и какую долю занимает искомый нами объект чтобы более точно определить порог для поиска скорлупы по отсу
-# Доработать защитные зоны вокруг скорлупы чтобы не пускать шум от сканирования в область поиска перегородки, а также защитную зону внутри скорлупы чтобы не пускать шум в область поиска ядра
+
 class Segmentator:
     def __init__(
         self,
@@ -45,7 +41,9 @@ class Segmentator:
         self._thin_max_radius: float = 7.0 # max thickness (in px) for components treated as thin lines/points
         self._thin_min_area: int = 20 # min area (in px) below which components are removed
 
-    def process(self) -> Tuple[VolumeStore, VolumeStore, VolumeStore]:
+        self._min_kernel_volume: int = 3000 # min volume (in voxels) for kernel components to be kept (lower means more aggressive detection of small kernels)
+
+    def process(self) -> tuple[VolumeStore, VolumeStore, VolumeStore]:
         base_store = self.volume_store.normalize_to_8bit().contrast()
         shell_z = self._segment_shell(
             base_store,
@@ -69,31 +67,26 @@ class Segmentator:
 
 
         morph_close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        morph_open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        kernel_close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
         shell_volume = VolumeStore.fuse_volumes(shell_z, shell_x, shell_y, votes_threshold=2).close(morph_close_kernel)
         kernel_volume = VolumeStore.from_volume(np.zeros_like(shell_volume.get_volume(), dtype=np.uint8))
 
-        volume_z_wo_shell = base_store.substract(shell_volume.expand_outside(), guard_radius=self._shell_guard_r)
-        septa_z = self._segment_septa(
-            volume_z_wo_shell,
+        volume_wo_shell = base_store.substract(shell_volume.expand_outside(), guard_radius=self._shell_guard_r)
+
+        kernel_volume = self._segment_kernels(
+            volume_wo_shell,
+            slice_start=self.z_start,
+            slice_end=self.z_end
+        ).close(kernel_close_kernel)
+
+        volume_wo_shell_kernel = volume_wo_shell.substract(kernel_volume, guard_radius=3)
+
+        septa_volume = self._segment_septa(
+            volume_wo_shell_kernel,
             slice_start=self.z_start,
             slice_end=self.z_end
         )
-
-        septa_x = self._segment_septa(
-            volume_z_wo_shell.transpose((0, 2, 1)),
-            slice_start=self.x_start,
-            slice_end=self.x_end
-        ).transpose((0, 2, 1))
-
-        septa_y = self._segment_septa(
-            volume_z_wo_shell.transpose((1, 2, 0)),
-            slice_start=self.y_start,
-            slice_end=self.y_end
-        ).transpose((2, 0, 1))
-
-        septa_volume = VolumeStore.fuse_volumes(septa_z, septa_x, septa_y, votes_threshold=2).open(morph_open_kernel)
 
         return (shell_volume, kernel_volume, septa_volume)
 
@@ -161,10 +154,8 @@ class Segmentator:
 
                 shell_refined = np.zeros_like(shell_clean)
                 shell_refined[markers > 1] = 255
-
             else:
                 shell_refined = shell_clean.copy()
-
 
             if (self.show_debug and i == (slice_start + slice_end) // 2):
                 dist_visual = cv2.normalize(distance_transform, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -199,6 +190,83 @@ class Segmentator:
 
         return VolumeStore.from_volume(shell_masks)
     
+    def _segment_kernels(
+        self,
+        volume_store: VolumeStore,
+        slice_start: int | None = None,
+        slice_end: int | None = None
+    ) -> VolumeStore:
+        kernel_masks = np.zeros_like(volume_store.get_volume(), dtype=np.uint8)
+
+        morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+        for i in range(slice_start, slice_end + 1):
+            img = volume_store.get_slice_z(i)
+
+            active_area = cv2.countNonZero(img)
+            
+            if active_area < 100 or img.max() < 20:
+                kernel_masks[:, :, i] = 0
+                continue
+
+            interior_hyst : Hystogram = Hystogram(img)
+
+            t_kernel = self._calc_threshold(interior_hyst.get_statistics(), int(img.mean() * self.bg_fraction))
+            kernel_mask = (img >= t_kernel).astype(np.uint8) * 255
+            kernel_mask = cv2.erode(kernel_mask, morph_kernel, iterations=3)
+
+            sure_bg = cv2.dilate(kernel_mask, morph_kernel, iterations=3)
+
+            dist_transform = cv2.distanceTransform(kernel_mask, cv2.DIST_L2, 5)
+
+            if dist_transform.max() < 5.0:
+                kernel_masks[:, :, i] = 0
+                continue
+
+            sure_fg = (dist_transform > 0.26 * dist_transform.max()).astype(np.uint8) * 255
+
+            unknown = cv2.subtract(sure_bg, sure_fg)
+
+            _, markers = cv2.connectedComponents(sure_fg)
+            markers = markers + 1 
+            markers[unknown == 255] = 0 
+
+            img_bgr = cv2.cvtColor((img * 2.7).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+            markers = cv2.watershed(img_bgr, markers)
+
+            kernel_bin = np.zeros_like(img, dtype=np.uint8)
+            kernel_bin[markers > 1] = 255 
+
+            if self.show_debug and i == (slice_start + slice_end) // 2:
+                dist_visual = cv2.normalize(dist_transform, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                show = np.concatenate(
+                    (
+                        img, 
+                        kernel_mask, 
+                        dist_visual, 
+                        sure_fg, 
+                        kernel_bin
+                    ),
+                    axis=1
+                )
+                cv2.imshow(f"Kernel Distance/Watershed debug slice {i}", show)
+                cv2.waitKey(0) 
+                cv2.destroyAllWindows()
+
+            kernel_masks[:, :, i] = kernel_bin
+
+        labeled_array, num_features = label(kernel_masks)
+        
+        if num_features > 0:
+            volumes = np.bincount(labeled_array.ravel())
+                        
+            valid_labels = np.where(volumes >= self._min_kernel_volume)[0]
+            valid_labels = valid_labels[valid_labels > 0] 
+            
+            kernel_masks = np.isin(labeled_array, valid_labels).astype(np.uint8) * 255
+
+        return VolumeStore.from_volume(kernel_masks)
+
     def _segment_septa(
         self,
         volume_store: VolumeStore,  
@@ -212,21 +280,38 @@ class Segmentator:
         for i in range(slice_start, slice_end + 1):
             interior = volume_store.get_slice_z(i)
 
+            active_area = cv2.countNonZero(interior)
+            
+            if active_area < 100 or interior.max() < 20:
+                septa_masks[:, :, i] = 0
+                continue
+
             gray_tophat = cv2.morphologyEx(interior, cv2.MORPH_TOPHAT, tophat_kernel)
 
             septa_hystoram : Hystogram = Hystogram(gray_tophat)
-            t_septa = self._calc_threshold(septa_hystoram.get_statistics())
-            septa_bin = (gray_tophat >= t_septa).astype(np.uint8) * 255
+            
+            t_strong = self._calc_threshold(septa_hystoram.get_statistics())
+            t_weak = t_strong * 0.25 
 
-            septa_clean = self._remove_thin_components(septa_bin, max_radius=0, min_area=15)
+            strong_mask = (gray_tophat >= t_strong).astype(np.uint8) * 255
+            weak_mask = (gray_tophat >= t_weak).astype(np.uint8) * 255
+
+            num_labels, labels = cv2.connectedComponents(weak_mask, connectivity=8)
+
+            septa_bin = np.zeros_like(gray_tophat, dtype=np.uint8)
+
+            for label in range(1, num_labels):
+                component = (labels == label)
+                if np.any(strong_mask[component]): 
+                    septa_bin[component] = 255
             
             if self.show_debug and i == (slice_start + slice_end) // 2:
-                show : np.ndarray = np.concat((interior, gray_tophat, septa_bin, septa_clean), axis=1)
+                show : np.ndarray = np.concat((interior, gray_tophat, strong_mask, weak_mask, septa_bin), axis=1)
                 cv2.imshow(f"Septa segmentation debug slice {i}", show)
                 cv2.waitKey(0) 
                 cv2.destroyAllWindows()
 
-            septa_masks[:, :, i] = septa_clean
+            septa_masks[:, :, i] = septa_bin
 
         return VolumeStore.from_volume(septa_masks)
 
