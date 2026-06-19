@@ -223,7 +223,7 @@ class Segmentator:
                 kernel_masks[:, :, i] = 0
                 continue
 
-            sure_fg = (dist_transform > 0.26 * dist_transform.max()).astype(np.uint8) * 255
+            sure_fg = (dist_transform > 0.3 * dist_transform.max()).astype(np.uint8) * 255
 
             unknown = cv2.subtract(sure_bg, sure_fg)
 
@@ -231,7 +231,7 @@ class Segmentator:
             markers = markers + 1 
             markers[unknown == 255] = 0 
 
-            img_bgr = cv2.cvtColor((img * 2.7).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+            img_bgr = cv2.cvtColor((img * 2.9).astype(np.uint8), cv2.COLOR_GRAY2BGR)
             markers = cv2.watershed(img_bgr, markers)
 
             kernel_bin = np.zeros_like(img, dtype=np.uint8)

@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from lab.helpers.json_parser import load_bounds
+from lab.helpers.mesher import Mesher
 from lab.helpers.segmentation_evaluator import SegmentationQualityEvaluator
 from lab.helpers.segmentator import Segmentator
 from lab.helpers.volume_store import VolumeStore
@@ -56,10 +57,10 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--boundary-tolerance",
-        type=int,
-        default=2,
-        help="Допуск для boundary-метрик в пикселях"
+        "--mesh-format",
+        type=str,
+        default="obj",
+        help="Формат сохранения мешей (obj, stl, ply)"
     )
 
     parser.add_argument(
@@ -115,6 +116,21 @@ def main() -> None:
 
         matched_slices = sum(len(metrics_list) for metrics_list in result.values())
         print(f"Matched slices: {matched_slices}")
+
+    print("Building meshes")
+    mesher = Mesher(
+        shell_volume=segmentation_results[0],
+        kernel_volume=segmentation_results[1],
+        septa_volume=segmentation_results[2],
+        show_debug=args.show_debug,
+    )
+    shell_mesh, kernel_mesh, septa_mesh = mesher.process()
+
+    mesh_dir = Path(args.output) / "meshes"
+    mesh_dir.mkdir(parents=True, exist_ok=True)
+
+    for name, mesh in [("shell", shell_mesh), ("kernel", kernel_mesh), ("septa", septa_mesh)]:
+        Mesher.save_mesh(mesh, mesh_dir / f"walnut_{name}.{args.mesh_format}", fmt=args.mesh_format)
 
 if __name__ == "__main__":
     main()
