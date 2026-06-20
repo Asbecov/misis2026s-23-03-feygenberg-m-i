@@ -20,19 +20,16 @@ class Mesher:
 
         self.show_debug = show_debug
 
-        self._spacing: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        self._spacing: tuple[float, float, float] = (0.1, 0.1, 0.1)
         self._smooth_iter: int = 5
         self._close_r: int = 2
-        self._step_size: int = 1
+        self._step_size: int = 2
         
     def process(self) -> tuple[trimesh.Trimesh, trimesh.Trimesh, trimesh.Trimesh]:
         configs = {
-            "shell":  dict(close_r=self._close_r, step_size=self._step_size,
-                           smooth_iter=self._smooth_iter, spike_threshold_mm=None),
-            "kernel": dict(close_r=self._close_r, step_size=self._step_size,
-                           smooth_iter=self._smooth_iter, spike_threshold_mm=None),
-            "septa":  dict(close_r=self._close_r, step_size=self._step_size,
-                           smooth_iter=self._smooth_iter, spike_threshold_mm=3.0),
+            "shell":  dict(close_r=self._close_r, step_size=self._step_size, smooth_iter=self._smooth_iter, spike_threshold_mm=None),
+            "kernel": dict(close_r=self._close_r, step_size=self._step_size, smooth_iter=self._smooth_iter, spike_threshold_mm=None),
+            "septa":  dict(close_r=self._close_r, step_size=self._step_size, smooth_iter=self._smooth_iter, spike_threshold_mm=0.3),
         }
 
         meshes: dict[str, trimesh.Trimesh] = {}
@@ -61,16 +58,11 @@ class Mesher:
                 spike_threshold_mm=cfg["spike_threshold_mm"],
             )
 
-            print(
-                f"  {name:>6}: {len(mesh.vertices):,} vertices, "
-                f"{len(mesh.faces):,} faces"
-            )
+            print(f"{name}: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
             meshes[name] = mesh
 
         if self.show_debug:
-            self._visualize_meshes(
-                meshes["shell"], meshes["kernel"], meshes["septa"]
-            )
+            self._visualize_meshes(meshes["shell"], meshes["kernel"], meshes["septa"])
 
         return meshes["shell"], meshes["kernel"], meshes["septa"]
 
@@ -83,7 +75,7 @@ class Mesher:
     def _volume_to_mesh(
         self,
         volume: np.ndarray,
-        spacing: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        spacing: tuple[float, float, float],
         close_r: int = 2,
         step_size: int = 1,
     ) -> trimesh.Trimesh:
@@ -108,7 +100,8 @@ class Mesher:
 
     @staticmethod
     def _remove_spikes(
-        mesh: trimesh.Trimesh, max_edge_len_mm: float = 5.0
+        mesh: trimesh.Trimesh, 
+        max_edge_len_mm: float,
     ) -> trimesh.Trimesh:
         edges = mesh.vertices[mesh.edges_unique]
         lengths = np.linalg.norm(edges[:, 1] - edges[:, 0], axis=1)
@@ -164,7 +157,6 @@ class Mesher:
             scene.add_geometry(septa_mesh_visual, node_name="Septa")
 
         try:
-            print("\n[debug] Opening interactive 3D viewer (close window to continue)...")
             scene.show()
         except Exception as e:
             print(f"Failed to open 3D viewer: {e}")
@@ -173,15 +165,11 @@ class Mesher:
     @staticmethod
     def save_mesh(
         mesh: trimesh.Trimesh,
-        path: Path,
-        fmt: str = "obj",
+        output_path: Path,
     ) -> None:
         if mesh.is_empty:
             return
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        mesh.export(str(path))
-        print(
-            f"    Saved mesh: {path}  "
-            f"({len(mesh.faces):,} faces, {len(mesh.vertices):,} vertices)"
-        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        mesh.export(str(output_path))
+        print(f"Saved mesh: {output_path}")

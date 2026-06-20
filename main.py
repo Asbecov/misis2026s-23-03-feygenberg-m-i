@@ -57,13 +57,6 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--mesh-format",
-        type=str,
-        default="obj",
-        help="Формат сохранения мешей (obj, stl, ply)"
-    )
-
-    parser.add_argument(
         "--show-debug",
         action="store_true",
         help="Показывать отладочные изображения"
@@ -87,7 +80,7 @@ def main() -> None:
 
     if args.evaluate:
         if args.etalon_dir is None:
-            raise ValueError("Для --evaluate нужно указать --etalon-dir")
+            raise ValueError("For evaluation --etalon-dir parameter is needed ")
 
         evaluator = SegmentationQualityEvaluator(
             shell_volume=segmentation_results[0],
@@ -130,7 +123,7 @@ def main() -> None:
     mesh_dir.mkdir(parents=True, exist_ok=True)
 
     for name, mesh in [("shell", shell_mesh), ("kernel", kernel_mesh), ("septa", septa_mesh)]:
-        Mesher.save_mesh(mesh, mesh_dir / f"walnut_{name}.{args.mesh_format}", fmt=args.mesh_format)
+        Mesher.save_mesh(mesh, mesh_dir / f"walnut_{name}.obj")
 
 if __name__ == "__main__":
     main()

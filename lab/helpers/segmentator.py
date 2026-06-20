@@ -210,14 +210,14 @@ class Segmentator:
                 continue
 
             interior_hyst : Hystogram = Hystogram(img)
-
             t_kernel = self._calc_threshold(interior_hyst.get_statistics(), int(img.mean() * self.bg_fraction))
+
             kernel_mask = (img >= t_kernel).astype(np.uint8) * 255
-            kernel_mask = cv2.erode(kernel_mask, morph_kernel, iterations=3)
+            kernel_mask_eroded = cv2.erode(kernel_mask, morph_kernel, iterations=3)
 
             sure_bg = cv2.dilate(kernel_mask, morph_kernel, iterations=3)
 
-            dist_transform = cv2.distanceTransform(kernel_mask, cv2.DIST_L2, 5)
+            dist_transform = cv2.distanceTransform(kernel_mask_eroded, cv2.DIST_L2, 5)
 
             if dist_transform.max() < 5.0:
                 kernel_masks[:, :, i] = 0
@@ -239,17 +239,28 @@ class Segmentator:
 
             if self.show_debug and i == (slice_start + slice_end) // 2:
                 dist_visual = cv2.normalize(dist_transform, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                show = np.concatenate(
+                show_otsu = np.concatenate(
                     (
-                        img, 
-                        kernel_mask, 
+                        cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), 
+                        interior_hyst.draw_hystogram(img.shape[1], img.shape[0], int(img.mean() * self.bg_fraction), t_kernel),
+                        cv2.cvtColor(kernel_mask, cv2.COLOR_GRAY2BGR),
                         dist_visual, 
-                        sure_fg, 
-                        kernel_bin
                     ),
                     axis=1
                 )
-                cv2.imshow(f"Kernel Distance/Watershed debug slice {i}", show)
+                show_watershed = np.concatenate(
+                    (
+                        img_bgr, 
+                        cv2.cvtColor(kernel_mask_eroded, cv2.COLOR_GRAY2BGR),
+                        cv2.cvtColor(sure_bg, cv2.COLOR_GRAY2BGR),
+                        dist_visual,  
+                        cv2.cvtColor(sure_fg, cv2.COLOR_GRAY2BGR), 
+                        cv2.cvtColor(kernel_bin, cv2.COLOR_GRAY2BGR)
+                    ), 
+                    axis=1
+                )
+                cv2.imshow(f"Kernel Otsu debug slice {i}", show_otsu)
+                cv2.imshow(f"Kernel Watershed debug slice {i}", show_watershed)
                 cv2.waitKey(0) 
                 cv2.destroyAllWindows()
 
@@ -278,15 +289,15 @@ class Segmentator:
         tophat_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
 
         for i in range(slice_start, slice_end + 1):
-            interior = volume_store.get_slice_z(i)
+            img = volume_store.get_slice_z(i)
 
-            active_area = cv2.countNonZero(interior)
+            active_area = cv2.countNonZero(img)
             
-            if active_area < 100 or interior.max() < 20:
+            if active_area < 100 or img.max() < 20:
                 septa_masks[:, :, i] = 0
                 continue
 
-            gray_tophat = cv2.morphologyEx(interior, cv2.MORPH_TOPHAT, tophat_kernel)
+            gray_tophat = cv2.morphologyEx(img, cv2.MORPH_TOPHAT, tophat_kernel)
 
             septa_hystoram : Hystogram = Hystogram(gray_tophat)
             
@@ -306,7 +317,7 @@ class Segmentator:
                     septa_bin[component] = 255
             
             if self.show_debug and i == (slice_start + slice_end) // 2:
-                show : np.ndarray = np.concat((interior, gray_tophat, strong_mask, weak_mask, septa_bin), axis=1)
+                show : np.ndarray = np.concat((img, gray_tophat, strong_mask, weak_mask, septa_bin), axis=1)
                 cv2.imshow(f"Septa segmentation debug slice {i}", show)
                 cv2.waitKey(0) 
                 cv2.destroyAllWindows()
