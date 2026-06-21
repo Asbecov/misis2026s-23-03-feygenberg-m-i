@@ -130,8 +130,9 @@ class VolumeStore:
             
             bg_filled = padded[1:-1, 1:-1]
 
-            combined = cv2.bitwise_or(slice_img, bg_filled)
-                
+            combined = bg_filled.copy()
+            combined[slice_img > 0] = 255
+            
             expanded[:, :, z] = combined
             
         return self.from_volume(expanded)

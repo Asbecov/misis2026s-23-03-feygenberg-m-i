@@ -1,7 +1,6 @@
 #  Data-set
-/data/walnut07/*
-/data/*
-/output/meshes/*
+data/walnut_agd07
+output/meshes/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

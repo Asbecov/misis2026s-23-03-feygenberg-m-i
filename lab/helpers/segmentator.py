@@ -45,6 +45,14 @@ class Segmentator:
 
     def process(self) -> tuple[VolumeStore, VolumeStore, VolumeStore]:
         base_store = self.volume_store.normalize_to_8bit().contrast()
+
+        if self.show_debug:
+            mid_z = (self.z_start + self.z_end) // 2
+            cv2.imshow("Volume base mid slice", base_store.get_slice_z(mid_z))
+            cv2.imshow("Volume mid slice", self.volume_store.get_slice_z(mid_z))
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+
         shell_z = self._segment_shell(
             base_store,
             slice_start=self.z_start,
@@ -72,7 +80,14 @@ class Segmentator:
         shell_volume = VolumeStore.fuse_volumes(shell_z, shell_x, shell_y, votes_threshold=2).close(morph_close_kernel)
         kernel_volume = VolumeStore.from_volume(np.zeros_like(shell_volume.get_volume(), dtype=np.uint8))
 
-        volume_wo_shell = base_store.substract(shell_volume.expand_outside(), guard_radius=self._shell_guard_r)
+        interior_mask = shell_volume.expand_outside()
+        volume_wo_shell = base_store.substract(interior_mask, guard_radius=self._shell_guard_r)
+
+        if self.show_debug:
+            mid_z = (self.z_start + self.z_end) // 2
+            cv2.imshow("ROI mask", interior_mask.get_slice_z(mid_z))
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
 
         kernel_volume = self._segment_kernels(
             volume_wo_shell,
@@ -210,7 +225,7 @@ class Segmentator:
                 continue
 
             interior_hyst : Hystogram = Hystogram(img)
-            t_kernel = self._calc_threshold(interior_hyst.get_statistics(), int(img.mean() * self.bg_fraction))
+            t_kernel = self._calc_threshold(interior_hyst.get_statistics())
 
             kernel_mask = (img >= t_kernel).astype(np.uint8) * 255
             kernel_mask_eroded = cv2.erode(kernel_mask, morph_kernel, iterations=3)
@@ -239,12 +254,12 @@ class Segmentator:
 
             if self.show_debug and i == (slice_start + slice_end) // 2:
                 dist_visual = cv2.normalize(dist_transform, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                dist_visual_bgr = cv2.cvtColor(dist_visual, cv2.COLOR_GRAY2BGR)
                 show_otsu = np.concatenate(
                     (
                         cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), 
-                        interior_hyst.draw_hystogram(img.shape[1], img.shape[0], int(img.mean() * self.bg_fraction), t_kernel),
+                        interior_hyst.draw_hystogram(img.shape[1], img.shape[0], thresh=t_kernel),
                         cv2.cvtColor(kernel_mask, cv2.COLOR_GRAY2BGR),
-                        dist_visual, 
                     ),
                     axis=1
                 )
@@ -253,7 +268,7 @@ class Segmentator:
                         img_bgr, 
                         cv2.cvtColor(kernel_mask_eroded, cv2.COLOR_GRAY2BGR),
                         cv2.cvtColor(sure_bg, cv2.COLOR_GRAY2BGR),
-                        dist_visual,  
+                        dist_visual_bgr,  
                         cv2.cvtColor(sure_fg, cv2.COLOR_GRAY2BGR), 
                         cv2.cvtColor(kernel_bin, cv2.COLOR_GRAY2BGR)
                     ), 
@@ -302,7 +317,7 @@ class Segmentator:
             septa_hystoram : Hystogram = Hystogram(gray_tophat)
             
             t_strong = self._calc_threshold(septa_hystoram.get_statistics())
-            t_weak = t_strong * 0.25 
+            t_weak = t_strong * 0.5
 
             strong_mask = (gray_tophat >= t_strong).astype(np.uint8) * 255
             weak_mask = (gray_tophat >= t_weak).astype(np.uint8) * 255
