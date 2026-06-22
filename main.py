@@ -102,10 +102,10 @@ def main() -> None:
             recall = np.array([metrics.recall for metrics in metrics_list], dtype=np.float64)
 
             print(f"{class_name:>6}: count={len(metrics_list)}")
-            print(f"  IoU       mean={iou.mean():.4f}  std={iou.std(ddof=0):.4f}")
-            print(f"  Dice      mean={dice.mean():.4f}  std={dice.std(ddof=0):.4f}")
-            print(f"  Precision mean={precision.mean():.4f}  std={precision.std(ddof=0):.4f}")
-            print(f"  Recall    mean={recall.mean():.4f}  std={recall.std(ddof=0):.4f}")
+            print(f"  IoU       mean={iou.mean():.4f}  std={iou.std(ddof=0):.4f} max={iou.max():.4f}, {iou.argmax()} min={iou.min():.4f} {iou.argmin()}")
+            print(f"  Dice      mean={dice.mean():.4f}  std={dice.std(ddof=0):.4f} max={dice.max():.4f} min={dice.min():.4f}")
+            print(f"  Precision mean={precision.mean():.4f}  std={precision.std(ddof=0):.4f} max={precision.max():.4f} min={precision.min():.4f}")
+            print(f"  Recall    mean={recall.mean():.4f}  std={recall.std(ddof=0):.4f} max={recall.max():.4f} min={recall.min():.4f}")
 
         matched_slices = sum(len(metrics_list) for metrics_list in result.values())
         print(f"Matched slices: {matched_slices}")
